@@ -11,21 +11,12 @@ import subprocess
 import tempfile
 from lyric_fetcher import LyricFetcher
 
-# 尝试导入static_ffmpeg，如果失败则使用系统ffmpeg
+# 尝试导入vlc，如果失败则使用pygame作为备用
 try:
-    import static_ffmpeg
-    # 在打包环境下设置路径
-    if getattr(sys, 'frozen', False):
-        # 打包后的环境
-        base_path = sys._MEIPASS
-        ffmpeg_dir = os.path.join(base_path, 'static_ffmpeg', 'bin')
-        os.environ['PATH'] = ffmpeg_dir + os.pathsep + os.environ['PATH']
-    else:
-        # 开发环境
-        static_ffmpeg.add_paths()
-    FFMPEG_AVAILABLE = True
+    import vlc
+    VLC_AVAILABLE = True
 except ImportError:
-    FFMPEG_AVAILABLE = False
+    VLC_AVAILABLE = False
 
 class BilibiliMusicPlayer:
     def __init__(self, root):
@@ -34,8 +25,7 @@ class BilibiliMusicPlayer:
         self.root.geometry("900x700")
         self.root.configure(bg='#1e1e1e')
         
-        # 初始化组件
-        pygame.mixer.init()
+        # 初始化播放器
         self.lyric_fetcher = LyricFetcher()
         
         # 当前状态
@@ -44,6 +34,20 @@ class BilibiliMusicPlayer:
         self.playlist = []
         self.current_index = 0
         self.song_duration = 0
+        
+        # 初始化VLC播放器（如果可用）
+        if VLC_AVAILABLE:
+            try:
+                self.vlc_instance = vlc.Instance()
+                self.vlc_player = self.vlc_instance.media_player_new()
+                self.vlc_events = self.vlc_player.event_manager()
+            except Exception as e:
+                print(f"VLC初始化失败: {e}")
+                VLC_AVAILABLE = False
+        
+        # 初始化pygame mixer作为备用
+        if not VLC_AVAILABLE:
+            pygame.mixer.init()
         
         self.setup_ui()
         
@@ -61,10 +65,10 @@ class BilibiliMusicPlayer:
                               fg='#4CAF50', bg='#1e1e1e')
         title_label.pack(side=tk.LEFT)
         
-        # 显示ffmpeg状态
-        ffmpeg_status = "✅ FFmpeg可用" if self.check_ffmpeg() else "⚠️ FFmpeg未找到，尝试直接下载"
-        status_label = tk.Label(title_frame, text=ffmpeg_status, 
-                               fg='yellow' if not self.check_ffmpeg() else 'green',
+        # 显示播放器状态
+        player_status = "✅ VLC播放器" if VLC_AVAILABLE else "⚠️ Pygame播放器 (格式支持有限)"
+        status_label = tk.Label(title_frame, text=player_status, 
+                               fg='yellow' if not VLC_AVAILABLE else 'green',
                                bg='#1e1e1e', font=('Arial', 9))
         status_label.pack(side=tk.RIGHT)
         
@@ -85,6 +89,19 @@ class BilibiliMusicPlayer:
                                  insertbackground='white', font=('Arial', 10))
         self.url_entry.pack(side=tk.LEFT, padx=10, fill=tk.X, expand=True)
         self.url_entry.insert(0, "https://www.bilibili.com/video/...")
+        
+        # 音质选择
+        quality_frame = tk.Frame(download_frame, bg='#1e1e1e')
+        quality_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        tk.Label(quality_frame, text="音质选择:", 
+                fg='white', bg='#1e1e1e', font=('Arial', 10)).pack(side=tk.LEFT)
+        
+        self.quality_var = tk.StringVar(value="high")
+        tk.Radiobutton(quality_frame, text="高音质 (优先MP3)", variable=self.quality_var, 
+                      value="high", fg='white', bg='#1e1e1e', selectcolor='#333').pack(side=tk.LEFT, padx=10)
+        tk.Radiobutton(quality_frame, text="最高音质 (原格式)", variable=self.quality_var, 
+                      value="best", fg='white', bg='#1e1e1e', selectcolor='#333').pack(side=tk.LEFT, padx=10)
         
         # 按钮框架
         btn_frame = tk.Frame(download_frame, bg='#1e1e1e')
@@ -205,14 +222,6 @@ class BilibiliMusicPlayer:
         self.scan_downloads_folder()
         self.update_progress()
         
-    def check_ffmpeg(self):
-        """检查ffmpeg是否可用"""
-        try:
-            result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True, timeout=5)
-            return result.returncode == 0
-        except:
-            return False
-        
     def scan_downloads_folder(self):
         """扫描下载文件夹中的音乐文件"""
         if not os.path.exists("downloads"):
@@ -220,10 +229,10 @@ class BilibiliMusicPlayer:
             return
             
         for file in os.listdir("downloads"):
-            if file.endswith('.mp3'):
+            if file.endswith(('.mp3', '.m4a', '.flac', '.wav', '.ogg')):
                 file_path = os.path.join("downloads", file)
                 song_info = {
-                    'title': file.replace('.mp3', ''),
+                    'title': os.path.splitext(file)[0],
                     'file': file_path,
                     'duration': 0
                 }
@@ -248,30 +257,33 @@ class BilibiliMusicPlayer:
             if not os.path.exists("downloads"):
                 os.makedirs("downloads")
                 
-            # 使用不依赖ffmpeg的配置
-            ydl_opts = {
-                'format': 'bestaudio/best',
-                'outtmpl': 'downloads/%(title)s.%(ext)s',
-            }
-            
-            # 如果ffmpeg可用，添加音频转换
-            if self.check_ffmpeg():
-                ydl_opts['postprocessors'] = [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': '192',
-                }]
+            # 根据音质选择配置
+            quality = self.quality_var.get()
+            if quality == "high":
+                # 高音质配置 - 优先MP3格式
+                ydl_opts = {
+                    'format': 'bestaudio/best',
+                    'outtmpl': 'downloads/%(title)s.%(ext)s',
+                    'postprocessors': [{
+                        'key': 'FFmpegExtractAudio',
+                        'preferredcodec': 'mp3',
+                        'preferredquality': '320',
+                    }],
+                }
             else:
-                self.status_label.config(text="⚠️ FFmpeg不可用，尝试直接下载音频...")
-                ydl_opts['format'] = 'bestaudio[ext=m4a]/bestaudio'
-                ydl_opts['outtmpl'] = 'downloads/%(title)s.%(ext)s'
+                # 最高音质 - 保持原格式
+                ydl_opts = {
+                    'format': 'bestaudio/best',
+                    'outtmpl': 'downloads/%(title)s.%(ext)s',
+                    # 不进行格式转换，保持最高音质
+                }
             
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 filename = ydl.prepare_filename(info)
                 
-                # 根据是否转换确定最终文件
-                if self.check_ffmpeg():
+                # 如果是高音质模式且进行了格式转换，文件扩展名会是mp3
+                if quality == "high" and 'postprocessors' in ydl_opts:
                     final_file = filename.rsplit('.', 1)[0] + '.mp3'
                 else:
                     final_file = filename
@@ -285,7 +297,10 @@ class BilibiliMusicPlayer:
                 self.playlist.append(song_info)
                 self.root.after(0, self.update_playlist)
                 
-                self.status_label.config(text=f"✅ 下载完成: {song_info['title']}")
+                # 显示下载的音质信息
+                file_size = os.path.getsize(final_file) / (1024 * 1024)  # MB
+                quality_info = "高音质MP3" if quality == "high" else "原格式高音质"
+                self.status_label.config(text=f"✅ 下载完成 ({quality_info}): {song_info['title']} ({file_size:.1f}MB)")
                 
         except Exception as e:
             error_msg = f"❌ 下载失败: {str(e)}"
@@ -307,19 +322,22 @@ class BilibiliMusicPlayer:
             self.progress.start()
             self.status_label.config(text="⏳ 正在获取合集信息...")
             
-            ydl_opts = {
-                'format': 'bestaudio/best',
-                'outtmpl': 'downloads/%(playlist_title)s/%(title)s.%(ext)s',
-            }
-            
-            if self.check_ffmpeg():
-                ydl_opts['postprocessors'] = [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': '192',
-                }]
+            quality = self.quality_var.get()
+            if quality == "high":
+                ydl_opts = {
+                    'format': 'bestaudio/best',
+                    'outtmpl': 'downloads/%(playlist_title)s/%(title)s.%(ext)s',
+                    'postprocessors': [{
+                        'key': 'FFmpegExtractAudio',
+                        'preferredcodec': 'mp3',
+                        'preferredquality': '320',
+                    }],
+                }
             else:
-                ydl_opts['format'] = 'bestaudio[ext=m4a]/bestaudio'
+                ydl_opts = {
+                    'format': 'bestaudio/best',
+                    'outtmpl': 'downloads/%(playlist_title)s/%(title)s.%(ext)s',
+                }
             
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
@@ -328,7 +346,7 @@ class BilibiliMusicPlayer:
                     for entry in info['entries']:
                         if entry:
                             filename = ydl.prepare_filename(entry)
-                            if self.check_ffmpeg():
+                            if quality == "high" and 'postprocessors' in ydl_opts:
                                 final_file = filename.rsplit('.', 1)[0] + '.mp3'
                             else:
                                 final_file = filename
@@ -342,7 +360,8 @@ class BilibiliMusicPlayer:
                             self.playlist.append(song_info)
                 
                 self.root.after(0, self.update_playlist)
-                self.status_label.config(text=f"✅ 合集下载完成，共{len([e for e in info.get('entries', []) if e])}首歌曲")
+                quality_info = "高音质MP3" if quality == "high" else "原格式高音质"
+                self.status_label.config(text=f"✅ 合集下载完成 ({quality_info})，共{len([e for e in info.get('entries', []) if e])}首歌曲")
                 
         except Exception as e:
             error_msg = f"❌ 下载失败: {str(e)}"
@@ -359,7 +378,9 @@ class BilibiliMusicPlayer:
     def update_playlist(self):
         self.playlist_box.delete(0, tk.END)
         for i, song in enumerate(self.playlist):
-            display_name = f"{i+1}. {song['title']}"
+            # 显示文件格式信息
+            file_ext = os.path.splitext(song['file'])[1].upper().replace('.', '')
+            display_name = f"{i+1}. {song['title']} [{file_ext}]"
             self.playlist_box.insert(tk.END, display_name)
             
     def on_playlist_select(self, event):
@@ -378,8 +399,16 @@ class BilibiliMusicPlayer:
         self.current_song = song['file']
         
         try:
-            pygame.mixer.music.load(self.current_song)
-            pygame.mixer.music.play()
+            if VLC_AVAILABLE:
+                # 使用VLC播放器
+                media = self.vlc_instance.media_new(self.current_song)
+                self.vlc_player.set_media(media)
+                self.vlc_player.play()
+            else:
+                # 使用pygame播放器（备用）
+                pygame.mixer.music.load(self.current_song)
+                pygame.mixer.music.play()
+                
             self.is_playing = True
             self.play_btn.config(text="⏸️ 暂停")
             self.current_song_label.config(text=f"正在播放: {song['title']}")
@@ -389,7 +418,10 @@ class BilibiliMusicPlayer:
             self.get_lyrics(song['title'])
             
         except Exception as e:
-            messagebox.showerror("错误", f"播放失败: {str(e)}")
+            error_msg = f"播放失败: {str(e)}"
+            if "ModPlug" in str(e):
+                error_msg += "\n\n💡 提示: 当前音频格式不被支持，请尝试下载MP3格式"
+            messagebox.showerror("错误", error_msg)
             
     def toggle_play(self):
         if not self.current_song:
@@ -401,11 +433,17 @@ class BilibiliMusicPlayer:
             return
             
         if self.is_playing:
-            pygame.mixer.music.pause()
+            if VLC_AVAILABLE:
+                self.vlc_player.pause()
+            else:
+                pygame.mixer.music.pause()
             self.is_playing = False
             self.play_btn.config(text="▶️ 播放")
         else:
-            pygame.mixer.music.unpause()
+            if VLC_AVAILABLE:
+                self.vlc_player.play()
+            else:
+                pygame.mixer.music.unpause()
             self.is_playing = True
             self.play_btn.config(text="⏸️ 暂停")
             
@@ -425,7 +463,10 @@ class BilibiliMusicPlayer:
             
     def set_volume(self, value):
         volume = int(value) / 100.0
-        pygame.mixer.music.set_volume(volume)
+        if VLC_AVAILABLE:
+            self.vlc_player.audio_set_volume(int(value))
+        else:
+            pygame.mixer.music.set_volume(volume)
         
     def seek_music(self, value):
         # 进度跳转功能（基础实现）
@@ -433,11 +474,27 @@ class BilibiliMusicPlayer:
             
     def update_progress(self):
         if self.is_playing:
-            # 更新时间显示（简化版）
-            current_time = pygame.mixer.music.get_pos() // 1000
-            minutes = current_time // 60
-            seconds = current_time % 60
-            self.time_label.config(text=f"{minutes:02d}:{seconds:02d}")
+            if VLC_AVAILABLE:
+                # VLC进度更新
+                length = self.vlc_player.get_length() / 1000  # 转换为秒
+                current = self.vlc_player.get_time() / 1000   # 转换为秒
+                
+                if length > 0:
+                    progress = (current / length) * 100
+                    self.song_progress.set(progress)
+                    
+                    # 更新时间显示
+                    current_min = int(current // 60)
+                    current_sec = int(current % 60)
+                    total_min = int(length // 60)
+                    total_sec = int(length % 60)
+                    self.time_label.config(text=f"{current_min:02d}:{current_sec:02d} / {total_min:02d}:{total_sec:02d}")
+            else:
+                # Pygame进度更新（简化版）
+                current_time = pygame.mixer.music.get_pos() // 1000
+                minutes = current_time // 60
+                seconds = current_time % 60
+                self.time_label.config(text=f"{minutes:02d}:{seconds:02d}")
             
         self.root.after(1000, self.update_progress)
         
@@ -476,7 +533,10 @@ class BilibiliMusicPlayer:
             
             # 如果删除的是当前播放的歌曲，停止播放
             if self.current_song == song['file']:
-                pygame.mixer.music.stop()
+                if VLC_AVAILABLE:
+                    self.vlc_player.stop()
+                else:
+                    pygame.mixer.music.stop()
                 self.current_song = None
                 self.is_playing = False
                 self.play_btn.config(text="▶️ 播放")
@@ -491,7 +551,10 @@ class BilibiliMusicPlayer:
         if messagebox.askyesno("确认", "确定要清空整个播放列表吗？"):
             # 停止播放
             if self.is_playing:
-                pygame.mixer.music.stop()
+                if VLC_AVAILABLE:
+                    self.vlc_player.stop()
+                else:
+                    pygame.mixer.music.stop()
                 self.current_song = None
                 self.is_playing = False
                 self.play_btn.config(text="▶️ 播放")
