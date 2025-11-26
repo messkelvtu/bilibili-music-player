@@ -1,0 +1,41 @@
+name: Build Windows Executable
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  release:
+    types: [published]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pyinstaller yt-dlp pygame requests beautifulsoup4
+        
+    - name: Build executable
+      run: |
+        pyinstaller --onefile --windowed --name "B站音乐播放器" --icon=icon.ico music_player.py
+      
+    - name: Create release zip
+      run: |
+        Compress-Archive -Path "dist/B站音乐播放器.exe" -DestinationPath "B站音乐播放器.zip"
+        
+    - name: Upload artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: B站音乐播放器
+        path: B站音乐播放器.zip
