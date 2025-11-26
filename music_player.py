@@ -6,7 +6,17 @@ import os
 import threading
 import requests
 import time
+import sys
+import subprocess
 from lyric_fetcher import LyricFetcher
+
+# 尝试导入static_ffmpeg，如果失败则使用系统ffmpeg
+try:
+    import static_ffmpeg
+    static_ffmpeg.add_paths()
+    FFMPEG_AVAILABLE = True
+except ImportError:
+    FFMPEG_AVAILABLE = False
 
 class BilibiliMusicPlayer:
     def __init__(self, root):
@@ -26,7 +36,56 @@ class BilibiliMusicPlayer:
         self.current_index = 0
         self.song_duration = 0
         
+        # 检查ffmpeg
+        self.check_ffmpeg()
+        
         self.setup_ui()
+        
+    def check_ffmpeg(self):
+        """检查ffmpeg是否可用"""
+        try:
+            # 尝试运行ffmpeg命令
+            if getattr(sys, 'frozen', False):
+                # 如果是打包后的exe文件
+                base_path = sys._MEIPASS
+                ffmpeg_path = os.path.join(base_path, 'static_ffmpeg', 'bin', 'ffmpeg.exe')
+                if os.path.exists(ffmpeg_path):
+                    self.ffmpeg_location = os.path.join(base_path, 'static_ffmpeg', 'bin')
+                else:
+                    self.ffmpeg_location = None
+            else:
+                # 如果是Python脚本
+                result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True)
+                if result.returncode == 0:
+                    self.ffmpeg_location = None  # 使用系统ffmpeg
+                else:
+                    # 尝试使用static_ffmpeg
+                    try:
+                        import static_ffmpeg
+                        static_ffmpeg.add_paths()
+                        self.ffmpeg_location = 'static_ffmpeg'
+                    except:
+                        self.ffmpeg_location = None
+        except:
+            self.ffmpeg_location = None
+            
+    def get_ydl_opts(self):
+        """获取yt-dlp配置"""
+        base_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': 'downloads/%(title)s.%(ext)s',
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
+        }
+        
+        # 如果有ffmpeg路径，添加到配置中
+        if self.ffmpeg_location:
+            base_opts['ffmpeg_location'] = self.ffmpeg_location
+            
+        return base_opts
         
     def setup_ui(self):
         # 主框架
@@ -41,6 +100,13 @@ class BilibiliMusicPlayer:
                               font=('Arial', 18, 'bold'), 
                               fg='#4CAF50', bg='#1e1e1e')
         title_label.pack(side=tk.LEFT)
+        
+        # 显示ffmpeg状态
+        ffmpeg_status = "✅ FFmpeg可用" if self.ffmpeg_location or self.check_ffmpeg_system() else "⚠️ FFmpeg未找到，音频转换可能失败"
+        status_label = tk.Label(title_frame, text=ffmpeg_status, 
+                               fg='yellow' if not (self.ffmpeg_location or self.check_ffmpeg_system()) else 'green',
+                               bg='#1e1e1e', font=('Arial', 9))
+        status_label.pack(side=tk.RIGHT)
         
         # 下载区域
         download_frame = tk.LabelFrame(main_frame, text=" 下载音乐 ", 
@@ -152,9 +218,8 @@ class BilibiliMusicPlayer:
         playlist_frame = tk.LabelFrame(content_frame, text=" 🎶 播放列表 ", 
                                       font=('Arial', 10, 'bold'),
                                       fg='white', bg='#1e1e1e', bd=1)
-        # 修复：移除pack中的width参数，改为在创建时设置宽度
         playlist_frame.pack(side=tk.RIGHT, fill=tk.BOTH, padx=(5, 0))
-        playlist_frame.config(width=300)  # 设置固定宽度
+        playlist_frame.config(width=300)
         
         # 播放列表控制
         playlist_control_frame = tk.Frame(playlist_frame, bg='#1e1e1e')
@@ -179,6 +244,14 @@ class BilibiliMusicPlayer:
         self.set_volume(70)
         self.scan_downloads_folder()
         self.update_progress()
+        
+    def check_ffmpeg_system(self):
+        """检查系统ffmpeg是否可用"""
+        try:
+            result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True)
+            return result.returncode == 0
+        except:
+            return False
         
     def scan_downloads_folder(self):
         """扫描下载文件夹中的音乐文件"""
@@ -215,15 +288,7 @@ class BilibiliMusicPlayer:
             if not os.path.exists("downloads"):
                 os.makedirs("downloads")
                 
-            ydl_opts = {
-                'format': 'bestaudio/best',
-                'outtmpl': 'downloads/%(title)s.%(ext)s',
-                'postprocessors': [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': '192',
-                }],
-            }
+            ydl_opts = self.get_ydl_opts()
             
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
@@ -261,15 +326,8 @@ class BilibiliMusicPlayer:
             self.progress.start()
             self.status_label.config(text="⏳ 正在获取合集信息...")
             
-            ydl_opts = {
-                'format': 'bestaudio/best',
-                'outtmpl': 'downloads/%(playlist_title)s/%(title)s.%(ext)s',
-                'postprocessors': [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': '192',
-                }],
-            }
+            ydl_opts = self.get_ydl_opts()
+            ydl_opts['outtmpl'] = 'downloads/%(playlist_title)s/%(title)s.%(ext)s'
             
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
