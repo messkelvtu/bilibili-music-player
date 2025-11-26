@@ -24,16 +24,11 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install pyinstaller yt-dlp pygame requests beautifulsoup4 static-ffmpeg
+        pip install pyinstaller yt-dlp pygame requests beautifulsoup4 python-vlc
         
-    - name: Find static_ffmpeg path and build
+    - name: Build executable
       run: |
-        # 获取static_ffmpeg的实际安装路径
-        $ffmpeg_path = python -c "import static_ffmpeg; import os; print(os.path.dirname(static_ffmpeg.__file__))"
-        echo "FFmpeg path: $ffmpeg_path"
-        
-        # 使用正确的路径打包
-        pyinstaller --onefile --windowed --name "B站音乐播放器" --add-data "$ffmpeg_path;static_ffmpeg" music_player.py
+        pyinstaller --onefile --windowed --name "B站音乐播放器" --add-binary "C:\hostedtoolcache\windows\Python\3.9.13\x64\Lib\site-packages\vlc\*.dll;vlc" music_player.py
       
     - name: Create release zip
       run: |
