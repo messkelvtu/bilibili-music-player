@@ -152,7 +152,9 @@ class BilibiliMusicPlayer:
         playlist_frame = tk.LabelFrame(content_frame, text=" 🎶 播放列表 ", 
                                       font=('Arial', 10, 'bold'),
                                       fg='white', bg='#1e1e1e', bd=1)
-        playlist_frame.pack(side=tk.RIGHT, fill=tk.BOTH, padx=(5, 0), width=300)
+        # 修复：移除pack中的width参数，改为在创建时设置宽度
+        playlist_frame.pack(side=tk.RIGHT, fill=tk.BOTH, padx=(5, 0))
+        playlist_frame.config(width=300)  # 设置固定宽度
         
         # 播放列表控制
         playlist_control_frame = tk.Frame(playlist_frame, bg='#1e1e1e')
