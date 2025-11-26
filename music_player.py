@@ -8,12 +8,21 @@ import requests
 import time
 import sys
 import subprocess
+import tempfile
 from lyric_fetcher import LyricFetcher
 
 # 尝试导入static_ffmpeg，如果失败则使用系统ffmpeg
 try:
     import static_ffmpeg
-    static_ffmpeg.add_paths()
+    # 在打包环境下设置路径
+    if getattr(sys, 'frozen', False):
+        # 打包后的环境
+        base_path = sys._MEIPASS
+        ffmpeg_dir = os.path.join(base_path, 'static_ffmpeg', 'bin')
+        os.environ['PATH'] = ffmpeg_dir + os.pathsep + os.environ['PATH']
+    else:
+        # 开发环境
+        static_ffmpeg.add_paths()
     FFMPEG_AVAILABLE = True
 except ImportError:
     FFMPEG_AVAILABLE = False
@@ -36,56 +45,7 @@ class BilibiliMusicPlayer:
         self.current_index = 0
         self.song_duration = 0
         
-        # 检查ffmpeg
-        self.check_ffmpeg()
-        
         self.setup_ui()
-        
-    def check_ffmpeg(self):
-        """检查ffmpeg是否可用"""
-        try:
-            # 尝试运行ffmpeg命令
-            if getattr(sys, 'frozen', False):
-                # 如果是打包后的exe文件
-                base_path = sys._MEIPASS
-                ffmpeg_path = os.path.join(base_path, 'static_ffmpeg', 'bin', 'ffmpeg.exe')
-                if os.path.exists(ffmpeg_path):
-                    self.ffmpeg_location = os.path.join(base_path, 'static_ffmpeg', 'bin')
-                else:
-                    self.ffmpeg_location = None
-            else:
-                # 如果是Python脚本
-                result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True)
-                if result.returncode == 0:
-                    self.ffmpeg_location = None  # 使用系统ffmpeg
-                else:
-                    # 尝试使用static_ffmpeg
-                    try:
-                        import static_ffmpeg
-                        static_ffmpeg.add_paths()
-                        self.ffmpeg_location = 'static_ffmpeg'
-                    except:
-                        self.ffmpeg_location = None
-        except:
-            self.ffmpeg_location = None
-            
-    def get_ydl_opts(self):
-        """获取yt-dlp配置"""
-        base_opts = {
-            'format': 'bestaudio/best',
-            'outtmpl': 'downloads/%(title)s.%(ext)s',
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }],
-        }
-        
-        # 如果有ffmpeg路径，添加到配置中
-        if self.ffmpeg_location:
-            base_opts['ffmpeg_location'] = self.ffmpeg_location
-            
-        return base_opts
         
     def setup_ui(self):
         # 主框架
@@ -102,9 +62,9 @@ class BilibiliMusicPlayer:
         title_label.pack(side=tk.LEFT)
         
         # 显示ffmpeg状态
-        ffmpeg_status = "✅ FFmpeg可用" if self.ffmpeg_location or self.check_ffmpeg_system() else "⚠️ FFmpeg未找到，音频转换可能失败"
+        ffmpeg_status = "✅ FFmpeg可用" if self.check_ffmpeg() else "⚠️ FFmpeg未找到，尝试直接下载"
         status_label = tk.Label(title_frame, text=ffmpeg_status, 
-                               fg='yellow' if not (self.ffmpeg_location or self.check_ffmpeg_system()) else 'green',
+                               fg='yellow' if not self.check_ffmpeg() else 'green',
                                bg='#1e1e1e', font=('Arial', 9))
         status_label.pack(side=tk.RIGHT)
         
@@ -245,10 +205,10 @@ class BilibiliMusicPlayer:
         self.scan_downloads_folder()
         self.update_progress()
         
-    def check_ffmpeg_system(self):
-        """检查系统ffmpeg是否可用"""
+    def check_ffmpeg(self):
+        """检查ffmpeg是否可用"""
         try:
-            result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True)
+            result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True, timeout=5)
             return result.returncode == 0
         except:
             return False
@@ -288,16 +248,37 @@ class BilibiliMusicPlayer:
             if not os.path.exists("downloads"):
                 os.makedirs("downloads")
                 
-            ydl_opts = self.get_ydl_opts()
+            # 使用不依赖ffmpeg的配置
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'outtmpl': 'downloads/%(title)s.%(ext)s',
+            }
+            
+            # 如果ffmpeg可用，添加音频转换
+            if self.check_ffmpeg():
+                ydl_opts['postprocessors'] = [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }]
+            else:
+                self.status_label.config(text="⚠️ FFmpeg不可用，尝试直接下载音频...")
+                ydl_opts['format'] = 'bestaudio[ext=m4a]/bestaudio'
+                ydl_opts['outtmpl'] = 'downloads/%(title)s.%(ext)s'
             
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 filename = ydl.prepare_filename(info)
-                mp3_file = filename.rsplit('.', 1)[0] + '.mp3'
+                
+                # 根据是否转换确定最终文件
+                if self.check_ffmpeg():
+                    final_file = filename.rsplit('.', 1)[0] + '.mp3'
+                else:
+                    final_file = filename
                 
                 song_info = {
                     'title': info.get('title', '未知标题'),
-                    'file': mp3_file,
+                    'file': final_file,
                     'duration': info.get('duration', 0)
                 }
                 
@@ -326,8 +307,19 @@ class BilibiliMusicPlayer:
             self.progress.start()
             self.status_label.config(text="⏳ 正在获取合集信息...")
             
-            ydl_opts = self.get_ydl_opts()
-            ydl_opts['outtmpl'] = 'downloads/%(playlist_title)s/%(title)s.%(ext)s'
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'outtmpl': 'downloads/%(playlist_title)s/%(title)s.%(ext)s',
+            }
+            
+            if self.check_ffmpeg():
+                ydl_opts['postprocessors'] = [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }]
+            else:
+                ydl_opts['format'] = 'bestaudio[ext=m4a]/bestaudio'
             
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
@@ -336,11 +328,14 @@ class BilibiliMusicPlayer:
                     for entry in info['entries']:
                         if entry:
                             filename = ydl.prepare_filename(entry)
-                            mp3_file = filename.rsplit('.', 1)[0] + '.mp3'
+                            if self.check_ffmpeg():
+                                final_file = filename.rsplit('.', 1)[0] + '.mp3'
+                            else:
+                                final_file = filename
                             
                             song_info = {
                                 'title': entry.get('title', '未知标题'),
-                                'file': mp3_file,
+                                'file': final_file,
                                 'duration': entry.get('duration', 0)
                             }
                             
